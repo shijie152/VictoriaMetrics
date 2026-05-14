@@ -4,12 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"slices"
 	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -48,12 +46,8 @@ var (
 )
 
 // NewVMSelectServer starts new server at the given addr, which serves vmselect requests from the given s.
-func NewVMSelectServer(addr string, s *storage.Storage, accountID, projectID uint32) (*vmselectapi.Server, error) {
-	api := &vmstorageAPI{
-		s:         s,
-		accountID: accountID,
-		projectID: projectID,
-	}
+func NewVMSelectServer(addr string, s *storage.Storage) (*vmselectapi.Server, error) {
+	api := newVMSingleAPI(s)
 	limits := vmselectapi.Limits{
 		MaxLabelNames:                 *maxTagKeys,
 		MaxLabelValues:                *maxTagValues,
@@ -68,21 +62,14 @@ func NewVMSelectServer(addr string, s *storage.Storage, accountID, projectID uin
 
 // vmstorageAPI impelements vmselectapi.API
 type vmstorageAPI struct {
-	s         *storage.Storage
-	accountID uint32
-	projectID uint32
+	s *storage.Storage
 }
 
 func (api *vmstorageAPI) InitSearch(qt *querytracer.Tracer, sq *storage.SearchQuery, deadline uint64) (vmselectapi.BlockIterator, error) {
-	if !sq.IsMultiTenant && (sq.AccountID != api.accountID || sq.ProjectID != api.projectID) {
-		return emptyBI, nil
-	}
-
 	tr := sq.GetTimeRange()
 	if err := checkTimeRange(api.s, tr); err != nil {
 		return nil, err
 	}
-
 	maxMetrics := getMaxMetrics(sq.MaxMetrics)
 	tfss, err := api.setupTfss(qt, sq, tr, maxMetrics, deadline)
 	if err != nil {
@@ -97,19 +84,10 @@ func (api *vmstorageAPI) InitSearch(qt *querytracer.Tracer, sq *storage.SearchQu
 		bi.MustClose()
 		return nil, err
 	}
-	// Initialize block iterator with the tenantID which will be added to the
-	// metric name of every block. See bi.NextBlock().
-	bi.tenantID = make([]byte, 0, 8)
-	bi.tenantID = encoding.MarshalUint32(bi.tenantID, sq.AccountID)
-	bi.tenantID = encoding.MarshalUint32(bi.tenantID, sq.ProjectID)
 	return bi, nil
 }
 
 func (api *vmstorageAPI) SearchMetricNames(qt *querytracer.Tracer, sq *storage.SearchQuery, deadline uint64) ([]string, error) {
-	if !sq.IsMultiTenant && (sq.AccountID != api.accountID || sq.ProjectID != api.projectID) {
-		return nil, nil
-	}
-
 	tr := sq.GetTimeRange()
 	maxMetrics := sq.MaxMetrics
 	if maxMetrics <= 0 {
@@ -124,31 +102,10 @@ func (api *vmstorageAPI) SearchMetricNames(qt *querytracer.Tracer, sq *storage.S
 	if len(tfss) == 0 {
 		return nil, fmt.Errorf("missing tag filters")
 	}
-
-	metricNames, err := api.s.SearchMetricNames(qt, tfss, tr, maxMetrics, deadline)
-	if err != nil {
-		return nil, err
-	}
-
-	// vmselect expects metric names to have the tenantID but vmsingle does not
-	// have it. Therefore the tenantID needs to be appended to every metric
-	// name.
-	dst := make([]byte, 0, 8)
-	dst = encoding.MarshalUint32(dst, sq.AccountID)
-	dst = encoding.MarshalUint32(dst, sq.ProjectID)
-	tenantID := string(dst)
-
-	for i, metricName := range metricNames {
-		metricNames[i] = tenantID + metricName
-	}
-	return metricNames, nil
+	return api.s.SearchMetricNames(qt, tfss, tr, maxMetrics, deadline)
 }
 
 func (api *vmstorageAPI) LabelValues(qt *querytracer.Tracer, sq *storage.SearchQuery, labelName string, maxLabelValues int, deadline uint64) ([]string, error) {
-	if !sq.IsMultiTenant && (sq.AccountID != api.accountID || sq.ProjectID != api.projectID) {
-		return nil, nil
-	}
-
 	tr := sq.GetTimeRange()
 	maxMetrics := sq.MaxMetrics
 	if maxMetrics <= 0 {
@@ -163,12 +120,8 @@ func (api *vmstorageAPI) LabelValues(qt *querytracer.Tracer, sq *storage.SearchQ
 	return api.s.SearchLabelValues(qt, labelName, tfss, tr, maxLabelValues, maxMetrics, deadline)
 }
 
-func (api *vmstorageAPI) TagValueSuffixes(qt *querytracer.Tracer, accountID, projectID uint32, tr storage.TimeRange, tagKey, tagValuePrefix string, delimiter byte,
+func (api *vmstorageAPI) TagValueSuffixes(qt *querytracer.Tracer, _, _ uint32, tr storage.TimeRange, tagKey, tagValuePrefix string, delimiter byte,
 	maxSuffixes int, deadline uint64) ([]string, error) {
-	if accountID != api.accountID || projectID != api.projectID {
-		return nil, nil
-	}
-
 	suffixes, err := api.s.SearchTagValueSuffixes(qt, tr, tagKey, tagValuePrefix, delimiter, maxSuffixes, deadline)
 	if err != nil {
 		return nil, err
@@ -181,10 +134,6 @@ func (api *vmstorageAPI) TagValueSuffixes(qt *querytracer.Tracer, accountID, pro
 }
 
 func (api *vmstorageAPI) LabelNames(qt *querytracer.Tracer, sq *storage.SearchQuery, maxLabelNames int, deadline uint64) ([]string, error) {
-	if !sq.IsMultiTenant && (sq.AccountID != api.accountID || sq.ProjectID != api.projectID) {
-		return nil, nil
-	}
-
 	tr := sq.GetTimeRange()
 	maxMetrics := sq.MaxMetrics
 	if maxMetrics <= 0 {
@@ -199,23 +148,15 @@ func (api *vmstorageAPI) LabelNames(qt *querytracer.Tracer, sq *storage.SearchQu
 	return api.s.SearchLabelNames(qt, tfss, tr, maxLabelNames, maxMetrics, deadline)
 }
 
-func (api *vmstorageAPI) SeriesCount(_ *querytracer.Tracer, accountID, projectID uint32, deadline uint64) (uint64, error) {
-	if accountID != api.accountID || projectID != api.projectID {
-		return 0, nil
-	}
+func (api *vmstorageAPI) SeriesCount(_ *querytracer.Tracer, _, _ uint32, deadline uint64) (uint64, error) {
 	return api.s.GetSeriesCount(deadline)
 }
 
-func (api *vmstorageAPI) Tenants(_ *querytracer.Tracer, _ storage.TimeRange, _ uint64) ([]string, error) {
-	tenantID := fmt.Sprintf("%d:%d", api.accountID, api.projectID)
-	return []string{tenantID}, nil
+func (api *vmstorageAPI) Tenants(qt *querytracer.Tracer, tr storage.TimeRange, deadline uint64) ([]string, error) {
+	return nil, nil
 }
 
 func (api *vmstorageAPI) TSDBStatus(qt *querytracer.Tracer, sq *storage.SearchQuery, focusLabel string, topN int, deadline uint64) (*storage.TSDBStatus, error) {
-	if !sq.IsMultiTenant && (sq.AccountID != api.accountID || sq.ProjectID != api.projectID) {
-		return &storage.TSDBStatus{}, nil
-	}
-
 	tr := sq.GetTimeRange()
 	maxMetrics := sq.MaxMetrics
 	if maxMetrics <= 0 {
@@ -232,10 +173,6 @@ func (api *vmstorageAPI) TSDBStatus(qt *querytracer.Tracer, sq *storage.SearchQu
 }
 
 func (api *vmstorageAPI) DeleteSeries(qt *querytracer.Tracer, sq *storage.SearchQuery, deadline uint64) (int, error) {
-	if !sq.IsMultiTenant && (sq.AccountID != api.accountID || sq.ProjectID != api.projectID) {
-		return 0, nil
-	}
-
 	tr := sq.GetTimeRange()
 	maxMetrics := sq.MaxMetrics
 	if maxMetrics <= 0 {
@@ -254,13 +191,11 @@ func (api *vmstorageAPI) DeleteSeries(qt *querytracer.Tracer, sq *storage.Search
 }
 
 func (api *vmstorageAPI) RegisterMetricNames(qt *querytracer.Tracer, mrs []storage.MetricRow, _ uint64) error {
-	return fmt.Errorf("not implemented")
+	api.s.RegisterMetricNames(qt, mrs)
+	return nil
 }
 
-func (api *vmstorageAPI) GetMetricNamesUsageStats(qt *querytracer.Tracer, tt *storage.TenantToken, limit, le int, matchPattern string, _ uint64) (metricnamestats.StatsResult, error) {
-	if tt != nil && (tt.AccountID != api.accountID || tt.ProjectID != api.projectID) {
-		return metricnamestats.StatsResult{}, nil
-	}
+func (api *vmstorageAPI) GetMetricNamesUsageStats(qt *querytracer.Tracer, _ *storage.TenantToken, limit, le int, matchPattern string, _ uint64) (metricnamestats.StatsResult, error) {
 	return api.s.GetMetricNamesStats(qt, limit, le, matchPattern), nil
 }
 
@@ -300,18 +235,14 @@ func (api *vmstorageAPI) setupTfss(qt *querytracer.Tracer, sq *storage.SearchQue
 	return tfss, nil
 }
 
-func (api *vmstorageAPI) GetMetadataRecords(qt *querytracer.Tracer, tt *storage.TenantToken, limit int, metricName string, deadline uint64) ([]*metricsmetadata.Row, error) {
-	if tt != nil && (tt.AccountID != api.accountID || tt.ProjectID != api.projectID) {
-		return nil, nil
-	}
+func (api *vmstorageAPI) GetMetadataRecords(qt *querytracer.Tracer, _ *storage.TenantToken, limit int, metricName string, _ uint64) ([]*metricsmetadata.Row, error) {
 	return api.s.GetMetadataRows(qt, limit, metricName), nil
 }
 
 // blockIterator implements vmselectapi.BlockIterator
 type blockIterator struct {
-	sr       storage.Search
-	mb       storage.MetricBlock
-	tenantID []byte
+	sr storage.Search
+	mb storage.MetricBlock
 }
 
 var blockIteratorsPool sync.Pool
@@ -320,7 +251,6 @@ func (bi *blockIterator) MustClose() {
 	bi.sr.MustClose()
 	bi.mb.MetricName = nil
 	bi.mb.Block.Reset()
-	bi.tenantID = nil
 	blockIteratorsPool.Put(bi)
 }
 
@@ -337,35 +267,14 @@ func (bi *blockIterator) NextBlock(dst []byte) ([]byte, bool) {
 		return dst, false
 	}
 	mb := bi.mb
-
-	// vmselect expects metric names to have the tenantID but vmsingle does not
-	// have it. Therefore the tenantID needs to be included to every metric
-	// name and block.
-	mb.MetricName = slices.Concat(bi.tenantID, bi.sr.MetricBlockRef.MetricName)
+	mb.MetricName = bi.sr.MetricBlockRef.MetricName
 	bi.sr.MetricBlockRef.BlockRef.MustReadBlock(&mb.Block)
-	dst = encoding.MarshalBytes(dst, mb.MetricName)
-	dst = append(dst, bi.tenantID...)
-	dst = storage.MarshalBlock(dst, &mb.Block)
-
+	dst = marshalMetricBlock(dst[:0], &mb)
 	return dst, true
 }
 
 func (bi *blockIterator) Error() error {
 	return bi.sr.Error()
-}
-
-var emptyBI = &emptyBlockIterator{}
-
-type emptyBlockIterator struct{}
-
-func (bi *emptyBlockIterator) MustClose() {}
-
-func (bi *emptyBlockIterator) NextBlock(dst []byte) ([]byte, bool) {
-	return dst, false
-}
-
-func (bi *emptyBlockIterator) Error() error {
-	return nil
 }
 
 // checkTimeRange returns true if the given tr is denied for querying.
