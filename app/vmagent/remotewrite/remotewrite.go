@@ -104,9 +104,6 @@ var (
 	disableMetadataPerURL = flagutil.NewArrayBool("remoteWrite.disableMetadata", "Whether to disable sending metadata to the corresponding -remoteWrite.url. "+
 		"By default, metadata sending is controlled by the global -enableMetadata flag")
 
-	enableMdx = flagutil.NewArrayBool("remoteWrite.mdx.enable", "Whether to only retain metrics from VictoriaMetrics services before sending them to the corresponding -remoteWrite.url. "+
-		"Please see https://docs.victoriametrics.com/victoriametrics/vmagent/#monitoring-data-exchange")
-
 	mdxRemoteWriteURLs = flagutil.NewArrayString("mdx.remoteWrite.url", "Remote storage URL to write data to. It must support either VictoriaMetrics remote write protocol "+
 		"or Prometheus remote_write protocol. Example url: http://<victoriametrics-host>:8428/api/v1/write . "+
 		"Pass multiple -remoteWrite.url options in order to replicate the collected data to multiple remote storage systems. "+

@@ -155,8 +155,8 @@ func loadRelabelConfigs() (*relabelConfigs, error) {
 	var urlRelabelCfgs []any
 	rcs.perURL = make([]*promrelabel.ParsedConfigs, len(*remoteWriteURLs)+len(*mdxRemoteWriteURLs))
 	rcp := make([]string, len(*relabelConfigPaths)+len(*mdxRelabelConfigPaths))
-	rcp = append(rcp, *relabelConfigPaths...)
-	rcp = append(rcp, *mdxRelabelConfigPaths...)
+	copy(rcp, *relabelConfigPaths)
+	copy(rcp[len(*relabelConfigPaths):], *mdxRelabelConfigPaths)
 	for i, path := range rcp {
 		if len(path) == 0 {
 			urlRelabelCfgs = append(urlRelabelCfgs, nil)
@@ -202,8 +202,8 @@ func (rcs *relabelConfigs) isSet() bool {
 func initLabelsGlobal() {
 	labelsGlobal = nil
 	unparsedLabelsGlobal := make([]string, len(*unparsedLabels)+len(*mdxUnparsedLabels))
-	unparsedLabelsGlobal = append(unparsedLabelsGlobal, *unparsedLabels...)
-	unparsedLabelsGlobal = append(unparsedLabelsGlobal, *mdxUnparsedLabels...)
+	copy(unparsedLabelsGlobal, *unparsedLabels)
+	copy(unparsedLabelsGlobal[len(*unparsedLabels):], *mdxUnparsedLabels)
 	for _, s := range unparsedLabelsGlobal {
 		if len(s) == 0 {
 			continue
