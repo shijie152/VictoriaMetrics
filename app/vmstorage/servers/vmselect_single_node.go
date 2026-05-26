@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	accountID = flag.Uint64("accountID", 0, "The accountID of the stored data")
-	projectID = flag.Uint64("projectID", 0, "The projectID of the stored data")
+	accountID = flag.Uint64("clusternative.accountID", 0, "The accountID of the stored data")
+	projectID = flag.Uint64("clusternative.projectID", 0, "The projectID of the stored data")
 )
 
 const (
@@ -26,10 +26,10 @@ const (
 
 func newVMSingleAPI(s *storage.Storage) *vmsingleAPI {
 	if *accountID > maxAccountID {
-		logger.Fatalf("-accountID must to be in the range [0, %d], got %d", maxAccountID, *accountID)
+		logger.Fatalf("-clusternative.accountID must to be in the range [0, %d], got %d", maxAccountID, *accountID)
 	}
 	if *projectID > maxProjectID {
-		logger.Fatalf("-projectID must to be in the range [0, %d], got %d", maxProjectID, *projectID)
+		logger.Fatalf("-clusternative.projectID must to be in the range [0, %d], got %d", maxProjectID, *projectID)
 	}
 	api := &vmsingleAPI{
 		s:         &vmstorageAPI{s: s},

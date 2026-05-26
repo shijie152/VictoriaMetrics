@@ -43,8 +43,8 @@ func TestMixedPrometheusQueries(t *testing.T) {
 	vmsingle := tc.MustStartVmsingle("vmsingle", []string{
 		"-storageDataPath=" + filepath.Join(tc.Dir(), "vmsingle"),
 		"-retentionPeriod=100y",
-		fmt.Sprintf("-accountID=%d", accountID1),
-		fmt.Sprintf("-projectID=%d", projectID1),
+		fmt.Sprintf("-clusternative.accountID=%d", accountID1),
+		fmt.Sprintf("-clusternative.projectID=%d", projectID1),
 	})
 	vmselect := tc.MustStartVmselectAt("vmselect", vmselectPath, []string{
 		"-storageNode=" + vmsingle.VmselectAddr(),
@@ -139,8 +139,8 @@ func TestMixedDeleteSeries(t *testing.T) {
 	vmsingle := tc.MustStartVmsingle("vmsingle", []string{
 		"-storageDataPath=" + filepath.Join(tc.Dir(), "vmsingle"),
 		"-retentionPeriod=100y",
-		fmt.Sprintf("-accountID=%d", accountID1),
-		fmt.Sprintf("-projectID=%d", projectID1),
+		fmt.Sprintf("-clusternative.accountID=%d", accountID1),
+		fmt.Sprintf("-clusternative.projectID=%d", projectID1),
 	})
 	vmselect := tc.MustStartVmselectAt("vmselect", vmselectPath, []string{
 		"-storageNode=" + vmsingle.VmselectAddr(),
@@ -191,8 +191,8 @@ func TestMixedGraphiteQueries(t *testing.T) {
 	vmsingle := tc.MustStartVmsingle("vmsingle", []string{
 		"-storageDataPath=" + filepath.Join(tc.Dir(), "vmsingle"),
 		"-retentionPeriod=100y",
-		fmt.Sprintf("-accountID=%d", accountID1),
-		fmt.Sprintf("-projectID=%d", projectID1),
+		fmt.Sprintf("-clusternative.accountID=%d", accountID1),
+		fmt.Sprintf("-clusternative.projectID=%d", projectID1),
 	})
 	vmselect := tc.MustStartVmselectAt("vmselect", vmselectPath, []string{
 		"-storageNode=" + vmsingle.VmselectAddr(),

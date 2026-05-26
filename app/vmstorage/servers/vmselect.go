@@ -17,22 +17,33 @@ import (
 )
 
 var (
-	maxUniqueTimeseries = flag.Int("search.maxUniqueTimeseries1", 0, "The maximum number of unique time series, which can be scanned during every query. "+
-		"This allows protecting against heavy queries, which select unexpectedly high number of series. When set to zero, the limit is automatically calculated based on -search.maxConcurrentRequests (inversely proportional) and memory available to the process (proportional). See also -search.max* command-line flags at vmselect")
-	maxTagKeys = flag.Int("search.maxTagKeys1", 100e3, "The maximum number of tag keys returned per search. "+
+	maxUniqueTimeseries = flag.Int("clusternative.maxUniqueTimeseries", 0, "The maximum number of unique time series, "+
+		"which can be scanned during every query by the vmselect PRC server. This allows protecting against heavy queries, "+
+		"which select unexpectedly high number of series. When set to zero, the limit is automatically calculated based on "+
+		" -clusternative.maxConcurrentRequests (inversely proportional) and memory available to the process (proportional). "+
+		"See also -clusternative.max* command-line flags at vmselect")
+	maxTagKeys = flag.Int("clusternative.maxTagKeys", 100e3, "The maximum number of tag keys returned per search. "+
 		"See also -search.maxLabelsAPISeries and -search.maxLabelsAPIDuration")
-	maxTagValues = flag.Int("search.maxTagValues1", 100e3, "The maximum number of tag values returned per search. "+
+	maxTagValues = flag.Int("clusternative.maxTagValues", 100e3, "The maximum number of tag values returned per search. "+
 		"See also -search.maxLabelsAPISeries and -search.maxLabelsAPIDuration")
-	maxTagValueSuffixesPerSearch = flag.Int("search.maxTagValueSuffixesPerSearch1", 100e3, "The maximum number of tag value suffixes returned from /metrics/find")
-	maxConcurrentRequests        = flag.Int("search.maxConcurrentRequests1", 2*cgroup.AvailableCPUs(), "The maximum number of concurrent vmselect requests "+
+	maxTagValueSuffixesPerSearch = flag.Int("clusternative.maxTagValueSuffixesPerSearch", 100e3, "The maximum number of tag value suffixes returned from /metrics/find")
+	maxConcurrentRequests        = flag.Int("clusternative.maxConcurrentRequests", getDefaultMaxConcurrentRequests(), "The maximum number of concurrent vmselect requests "+
 		"the vmstorage can process at -vmselectAddr. It shouldn't be high, since a single request usually saturates a CPU core, and many concurrently executed requests "+
 		"may require high amounts of memory. See also -search.maxQueueDuration")
-	maxQueueDuration = flag.Duration("search.maxQueueDuration1", 10*time.Second, "The maximum time the incoming vmselect request waits for execution "+
+	maxQueueDuration = flag.Duration("clusternative.maxQueueDuration", 10*time.Second, "The maximum time the incoming vmselect request waits for execution "+
 		"when -search.maxConcurrentRequests limit is reached")
 
 	disableRPCCompression = flag.Bool("rpc.disableCompression", false, "Whether to disable compression of the data sent from vmstorage to vmselect. "+
 		"This reduces CPU usage at the cost of higher network bandwidth usage")
 )
+
+func getDefaultMaxConcurrentRequests() int {
+	// A single request can saturate all the CPU cores, so there is no sense
+	// in allowing higher number of concurrent requests - they will just contend
+	// for unavailable CPU time.
+	n := min(cgroup.AvailableCPUs()*2, 16)
+	return n
+}
 
 var (
 	maxUniqueTimeseriesValue     int
