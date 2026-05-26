@@ -106,6 +106,89 @@ var (
 
 	enableMdx = flagutil.NewArrayBool("remoteWrite.mdx.enable", "Whether to only retain metrics from VictoriaMetrics services before sending them to the corresponding -remoteWrite.url. "+
 		"Please see https://docs.victoriametrics.com/victoriametrics/vmagent/#monitoring-data-exchange")
+
+	mdxRemoteWriteURLs = flagutil.NewArrayString("mdx.remoteWrite.url", "Remote storage URL to write data to. It must support either VictoriaMetrics remote write protocol "+
+		"or Prometheus remote_write protocol. Example url: http://<victoriametrics-host>:8428/api/v1/write . "+
+		"Pass multiple -remoteWrite.url options in order to replicate the collected data to multiple remote storage systems. "+
+		"The data can be sharded among the configured remote storage systems if -remoteWrite.shardByURL flag is set")
+	mdxQueues = flagutil.NewArrayInt("mdx.remoteWrite.queues", cgroup.AvailableCPUs()*2, "The number of concurrent queues to each -remoteWrite.url. Set more queues if default number of queues "+
+		"isn't enough for sending high volume of collected data to remote storage. "+
+		"Default value depends on the number of available CPU cores. It should work fine in most cases since it minimizes resource usage")
+	mdxSignificantFigures = flagutil.NewArrayInt("mdx.remoteWrite.significantFigures", 0, "The number of significant figures to leave in metric values before writing them "+
+		"to remote storage. See https://en.wikipedia.org/wiki/Significant_figures . Zero value saves all the significant figures. "+
+		"This option may be used for improving data compression for the stored metrics. See also -remoteWrite.roundDigits")
+	mdxRoundDigits = flagutil.NewArrayInt("mdx.remoteWrite.roundDigits", 100, "Round metric values to this number of decimal digits after the point before "+
+		"writing them to remote storage. "+
+		"Examples: -remoteWrite.roundDigits=2 would round 1.236 to 1.24, while -remoteWrite.roundDigits=-1 would round 126.78 to 130. "+
+		"By default, digits rounding is disabled. Set it to 100 for disabling it for a particular remote storage. "+
+		"This option may be used for improving data compression for the stored metrics")
+	mdxDisableOnDiskQueue = flagutil.NewArrayBool("mdx.remoteWrite.disableOnDiskQueue", "Whether to disable storing pending data to -remoteWrite.tmpDataPath "+
+		"when the remote storage system at the corresponding -remoteWrite.url cannot keep up with the data ingestion rate. "+
+		"See https://docs.victoriametrics.com/victoriametrics/vmagent/#disabling-on-disk-persistence . See also -remoteWrite.dropSamplesOnOverload")
+	mdxMaxPendingBytesPerURL = flagutil.NewArrayBytes("mdx.remoteWrite.maxDiskUsagePerURL", 0, "The maximum file-based buffer size in bytes at -remoteWrite.tmpDataPath "+
+		"for each -remoteWrite.url. When buffer size reaches the configured maximum, then old data is dropped when adding new data to the buffer. "+
+		"Buffered data is stored in ~500MB chunks. It is recommended to set the value for this flag to a multiple of the block size 500MB. "+
+		"Disk usage is unlimited if the value is set to 0")
+	mdxDisableMetadataPerURL = flagutil.NewArrayBool("mdx.remoteWrite.disableMetadata", "Whether to disable sending metadata to the corresponding -remoteWrite.url. "+
+		"By default, metadata sending is controlled by the global -enableMetadata flag")
+)
+
+type Flags struct {
+	enableMdx                      bool
+	remoteWriteURLs                *flagutil.ArrayString
+	maxPendingBytesPerURL          *flagutil.ArrayBytes
+	queues                         *flagutil.ArrayInt
+	significantFigures             *flagutil.ArrayInt
+	roundDigits                    *flagutil.ArrayInt
+	disableOnDiskQueue             *flagutil.ArrayBool
+	disableMetadataPerURL          *flagutil.ArrayBool
+	streamAggrConfig               *flagutil.ArrayString
+	streamAggrDropInput            *flagutil.ArrayBool
+	streamAggrKeepInput            *flagutil.ArrayBool
+	streamAggrDedupInterval        *flagutil.ArrayDuration
+	streamAggrIgnoreOldSamples     *flagutil.ArrayBool
+	streamAggrIgnoreFirstIntervals *flagutil.ArrayInt
+	streamAggrDropInputLabels      *flagutil.ArrayString
+	streamAggrEnableWindows        *flagutil.ArrayBool
+}
+
+var (
+	remoteWriteFlags = &Flags{
+		enableMdx:                      false,
+		remoteWriteURLs:                remoteWriteURLs,
+		queues:                         queues,
+		significantFigures:             significantFigures,
+		roundDigits:                    roundDigits,
+		disableMetadataPerURL:          disableMetadataPerURL,
+		disableOnDiskQueue:             disableOnDiskQueue,
+		maxPendingBytesPerURL:          maxPendingBytesPerURL,
+		streamAggrConfig:               streamAggrConfig,
+		streamAggrDropInput:            streamAggrDropInput,
+		streamAggrKeepInput:            streamAggrKeepInput,
+		streamAggrDedupInterval:        streamAggrDedupInterval,
+		streamAggrIgnoreOldSamples:     streamAggrIgnoreOldSamples,
+		streamAggrIgnoreFirstIntervals: streamAggrIgnoreFirstIntervals,
+		streamAggrDropInputLabels:      streamAggrDropInputLabels,
+		streamAggrEnableWindows:        streamAggrEnableWindows,
+	}
+	mdxRemoteWriteFlags = &Flags{
+		enableMdx:                      true,
+		remoteWriteURLs:                mdxRemoteWriteURLs,
+		queues:                         mdxQueues,
+		significantFigures:             mdxSignificantFigures,
+		roundDigits:                    mdxRoundDigits,
+		disableMetadataPerURL:          mdxDisableMetadataPerURL,
+		disableOnDiskQueue:             mdxDisableOnDiskQueue,
+		maxPendingBytesPerURL:          mdxMaxPendingBytesPerURL,
+		streamAggrConfig:               mdxStreamAggrConfig,
+		streamAggrDropInput:            mdxStreamAggrDropInput,
+		streamAggrKeepInput:            mdxStreamAggrKeepInput,
+		streamAggrDedupInterval:        mdxStreamAggrDedupInterval,
+		streamAggrIgnoreOldSamples:     mdxStreamAggrIgnoreOldSamples,
+		streamAggrIgnoreFirstIntervals: mdxStreamAggrIgnoreFirstIntervals,
+		streamAggrDropInputLabels:      mdxStreamAggrDropInputLabels,
+		streamAggrEnableWindows:        mdxStreamAggrEnableWindows,
+	}
 )
 
 var (
@@ -168,8 +251,8 @@ var (
 //
 // Stop must be called for graceful shutdown.
 func Init() {
-	if len(*remoteWriteURLs) == 0 {
-		logger.Fatalf("at least one `-remoteWrite.url` command-line flag must be set")
+	if len(*remoteWriteURLs) == 0 && len(*mdxRemoteWriteURLs) == 0 {
+		logger.Fatalf("at least one `-remoteWrite.url` or `-mdx.remoteWrite.url` command-line flag must be set")
 	}
 	if limit := getMaxHourlySeries(); limit > 0 {
 		hourlySeriesLimiter = bloomfilter.NewLimiter(limit, time.Hour)
@@ -208,7 +291,7 @@ func Init() {
 
 	initStreamAggrConfigGlobal()
 
-	initRemoteWriteCtxs(*remoteWriteURLs)
+	initRemoteWriteCtxs(*remoteWriteURLs, *mdxRemoteWriteURLs)
 
 	disableOnDiskQueues := []bool(*disableOnDiskQueue)
 	disableOnDiskQueueAny = slices.Contains(disableOnDiskQueues, true)
@@ -217,7 +300,7 @@ func Init() {
 	// In this case it is impossible to prevent from sending many duplicates of samples passed to TryPush() to all the configured -remoteWrite.url
 	// if these samples couldn't be sent to the -remoteWrite.url with the disabled persistent queue. So it is better sending samples
 	// to the remaining -remoteWrite.url and dropping them on the blocked queue.
-	dropSamplesOnFailureGlobal = *dropSamplesOnOverload || disableOnDiskQueueAny && len(*remoteWriteURLs) > 1
+	dropSamplesOnFailureGlobal = *dropSamplesOnOverload || disableOnDiskQueueAny && len(*remoteWriteURLs)+len(*mdxRemoteWriteURLs) > 1
 
 	dropDanglingQueues()
 
@@ -268,12 +351,15 @@ func dropDanglingQueues() {
 	}
 }
 
-func initRemoteWriteCtxs(urls []string) {
-	if len(urls) == 0 {
+func initRemoteWriteCtxs(urls []string, mdxUrls []string) {
+	if len(urls) == 0 && len(mdxUrls) == 0 {
 		logger.Panicf("BUG: urls must be non-empty")
 	}
-	rwctxs := make([]*remoteWriteCtx, len(urls))
-	rwctxIdx := make([]int, len(urls))
+	if len(mdxUrls) != 0 && *shardByURL {
+		logger.Panicf("-remoteWrite.shardByURL should be false when -mdx.remoteWrite.url is set.")
+	}
+	rwctxs := make([]*remoteWriteCtx, len(urls)+len(mdxUrls))
+	rwctxIdx := make([]int, len(urls)+len(mdxUrls))
 	if retryMaxTime.String() != "" {
 		logger.Warnf("-remoteWrite.retryMaxTime is deprecated; use -remoteWrite.retryMaxInterval instead")
 	}
@@ -286,8 +372,22 @@ func initRemoteWriteCtxs(urls []string) {
 		if *showRemoteWriteURL {
 			sanitizedURL = fmt.Sprintf("%d:%s", i+1, remoteWriteURL)
 		}
-		rwctxs[i] = newRemoteWriteCtx(i, remoteWriteURL, sanitizedURL)
+		rwctxs[i] = newRemoteWriteCtx(i, remoteWriteURL, sanitizedURL, remoteWriteFlags)
 		rwctxIdx[i] = i
+	}
+
+	idx := len(urls)
+	for i, remoteWriteURLRaw := range mdxUrls {
+		remoteWriteURL, err := url.Parse(remoteWriteURLRaw)
+		if err != nil {
+			logger.Fatalf("invalid -mdx.remoteWrite.url=%q: %s", remoteWriteURL, err)
+		}
+		sanitizedURL := fmt.Sprintf("%d:secret-url", i+1)
+		if *showRemoteWriteURL {
+			sanitizedURL = fmt.Sprintf("%d:%s", i+1, remoteWriteURL)
+		}
+		rwctxs[idx+i] = newRemoteWriteCtx(i, remoteWriteURL, sanitizedURL, mdxRemoteWriteFlags)
+		rwctxIdx[idx+i] = i
 	}
 
 	if *shardByURL {
@@ -298,7 +398,7 @@ func initRemoteWriteCtxs(urls []string) {
 		rwctxConsistentHashGlobal = consistenthash.NewConsistentHash(consistentHashNodes, 0)
 	}
 
-	if slices.Contains(*enableMdx, true) {
+	if len(mdxUrls) != 0 {
 		mdx.InitGlobalFilter()
 	}
 
@@ -858,13 +958,14 @@ type remoteWriteCtx struct {
 	pushFailures                 *metrics.Counter
 	metadataDroppedOnPushFailure *metrics.Counter
 	rowsDroppedOnPushFailure     *metrics.Counter
+	flags                        *Flags
 }
 
 // isMetadataEnabledForURL returns true if metadata should be sent to the remote storage at argIdx.
 // It checks the per-URL -remoteWrite.disableMetadata flag first.
 // If not set, it falls back to the global -enableMetadata flag.
-func isMetadataEnabledForURL(argIdx int) bool {
-	if disableMetadataPerURL.GetOptionalArg(argIdx) {
+func isMetadataEnabledForURL(flags *Flags, argIdx int) bool {
+	if flags.disableMetadataPerURL.GetOptionalArg(argIdx) {
 		// Metadata is explicitly disabled for this URL
 		return false
 	}
@@ -872,29 +973,29 @@ func isMetadataEnabledForURL(argIdx int) bool {
 	return prommetadata.IsEnabled()
 }
 
-func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, sanitizedURL string) *remoteWriteCtx {
+func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, sanitizedURL string, flags *Flags) *remoteWriteCtx {
 	// strip query params, otherwise changing params resets pq
 	pqURL := *remoteWriteURL
 	pqURL.RawQuery = ""
 	pqURL.Fragment = ""
 	h := xxhash.Sum64([]byte(pqURL.String()))
 	queuePath := filepath.Join(*tmpDataPath, persistentQueueDirname, fmt.Sprintf("%d_%016X", argIdx+1, h))
-	maxPendingBytes := maxPendingBytesPerURL.GetOptionalArg(argIdx)
+	maxPendingBytes := flags.maxPendingBytesPerURL.GetOptionalArg(argIdx)
 	if maxPendingBytes != 0 && maxPendingBytes < persistentqueue.DefaultChunkFileSize {
 		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/4195
 		logger.Warnf("rounding the -remoteWrite.maxDiskUsagePerURL=%d to the minimum supported value: %d", maxPendingBytes, persistentqueue.DefaultChunkFileSize)
 		maxPendingBytes = persistentqueue.DefaultChunkFileSize
 	}
 
-	isPQDisabled := disableOnDiskQueue.GetOptionalArg(argIdx)
-	queuesSize := queues.GetOptionalArg(argIdx)
+	isPQDisabled := flags.disableOnDiskQueue.GetOptionalArg(argIdx)
+	queuesSize := flags.queues.GetOptionalArg(argIdx)
 	if queuesSize > maxQueues {
 		queuesSize = maxQueues
 	} else if queuesSize <= 0 {
 		queuesSize = 1
 	}
 
-	maxInmemoryBlocks := memory.Allowed() / len(*remoteWriteURLs) / *maxRowsPerBlock / 100
+	maxInmemoryBlocks := memory.Allowed() / (len(*remoteWriteURLs) + len(*mdxRemoteWriteURLs)) / *maxRowsPerBlock / 100
 	if maxInmemoryBlocks/queuesSize > 100 {
 		// There is no much sense in keeping higher number of blocks in memory,
 		// since this means that the producer outperforms consumer and the queue
@@ -928,8 +1029,8 @@ func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, sanitizedURL string)
 	c.init(argIdx, queuesSize, sanitizedURL)
 
 	// Initialize pss
-	sf := significantFigures.GetOptionalArg(argIdx)
-	rd := roundDigits.GetOptionalArg(argIdx)
+	sf := flags.significantFigures.GetOptionalArg(argIdx)
+	rd := flags.roundDigits.GetOptionalArg(argIdx)
 	pssLen := queuesSize
 	if n := cgroup.AvailableCPUs(); pssLen > n {
 		// There is no sense in running more than availableCPUs concurrent pendingSeries,
@@ -940,13 +1041,18 @@ func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, sanitizedURL string)
 	for i := range pss {
 		pss[i] = newPendingSeries(fq, &c.useVMProto, sf, rd)
 	}
+	idx := argIdx
+	if flags.enableMdx {
+		idx += len(*remoteWriteURLs)
+	}
 	rwctx := &remoteWriteCtx{
-		idx:            argIdx,
+		idx:            idx,
 		fq:             fq,
 		c:              c,
 		pss:            pss,
-		enableMetadata: isMetadataEnabledForURL(argIdx),
-		enableMdx:      enableMdx.GetOptionalArg(argIdx),
+		enableMetadata: isMetadataEnabledForURL(flags, argIdx),
+		enableMdx:      flags.enableMdx,
+		flags:          flags,
 
 		rowsPushedAfterRelabel: metrics.GetOrCreateCounter(fmt.Sprintf(`vmagent_remotewrite_rows_pushed_after_relabel_total{path=%q,url=%q}`, queuePath, sanitizedURL)),
 		rowsDroppedByRelabel:   metrics.GetOrCreateCounter(fmt.Sprintf(`vmagent_remotewrite_relabel_metrics_dropped_total{path=%q,url=%q}`, queuePath, sanitizedURL)),
@@ -1005,16 +1111,13 @@ func (rwctx *remoteWriteCtx) TryPushTimeSeries(tss []prompb.TimeSeries, forceDro
 	}()
 
 	if rwctx.enableMdx && mdx.GlobalFilter != nil {
-		rctx = getRelabelCtx()
 		// Make a copy of tss
+		rctx = getRelabelCtx()
 		rowsCountBeforeMdx := getRowsCount(tss)
-		resTss := tssPool.Get().(*[]prompb.TimeSeries)
-		tss = mdx.GlobalFilter.Filter(tss, *resTss)
-		rowsCountAfterMdx := getRowsCount(*resTss)
+		v = tssPool.Get().(*[]prompb.TimeSeries)
+		tss = mdx.GlobalFilter.Filter(tss, *v)
+		rowsCountAfterMdx := getRowsCount(tss)
 		rwctx.rowsDroppedByMdx.Add(rowsCountBeforeMdx - rowsCountAfterMdx)
-		if len(tss) == 0 {
-			return true
-		}
 	}
 
 	// Apply relabeling

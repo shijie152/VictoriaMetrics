@@ -65,6 +65,32 @@ var (
 	streamAggrEnableWindows = flagutil.NewArrayBool("remoteWrite.streamAggr.enableWindows", "Enables aggregation within fixed windows for all remote write's aggregators. "+
 		"This allows to get more precise results, but impacts resource usage as it requires twice more memory to store two states. "+
 		"See https://docs.victoriametrics.com/victoriametrics/stream-aggregation/#aggregation-windows.")
+
+	mdxStreamAggrConfig = flagutil.NewArrayString("mdx.remoteWrite.streamAggr.config", "Optional path to file with stream aggregation config for the corresponding -remoteWrite.url. "+
+		"See https://docs.victoriametrics.com/victoriametrics/stream-aggregation/ . "+
+		"See also -remoteWrite.streamAggr.keepInput, -mdx.remoteWrite.streamAggr.dropInput and -remoteWrite.streamAggr.dedupInterval")
+	mdxStreamAggrDropInput = flagutil.NewArrayBool("mdx.remoteWrite.streamAggr.dropInput", "Whether to drop input samples that not matching any rule in "+
+		"the corresponding -remoteWrite.streamAggr.config. By default, only matched raw samples are dropped, while unmatched samples "+
+		"are written to the corresponding -remoteWrite.url . See also -remoteWrite.streamAggr.keepInput and https://docs.victoriametrics.com/victoriametrics/stream-aggregation/")
+	mdxStreamAggrKeepInput = flagutil.NewArrayBool("mdx.remoteWrite.streamAggr.keepInput", "Whether to keep input samples that match any rule in "+
+		"the corresponding -remoteWrite.streamAggr.config. By default, matched raw samples are aggregated and dropped, while unmatched samples "+
+		"are written to the corresponding -remoteWrite.url . See also -remoteWrite.streamAggr.dropInput and https://docs.victoriametrics.com/victoriametrics/stream-aggregation/")
+	mdxStreamAggrDedupInterval = flagutil.NewArrayDuration("mdx.remoteWrite.streamAggr.dedupInterval", 0, "Input samples are de-duplicated with this interval before optional aggregation "+
+		"with -remoteWrite.streamAggr.config at the corresponding -remoteWrite.url. See also -dedup.minScrapeInterval and https://docs.victoriametrics.com/victoriametrics/stream-aggregation/#deduplication")
+	mdxStreamAggrIgnoreOldSamples = flagutil.NewArrayBool("mdx.remoteWrite.streamAggr.ignoreOldSamples", "Whether to ignore input samples with old timestamps outside the current "+
+		"aggregation interval for the corresponding -remoteWrite.streamAggr.config at the corresponding -remoteWrite.url. "+
+		"See https://docs.victoriametrics.com/victoriametrics/stream-aggregation/#ignoring-old-samples")
+	mdxStreamAggrIgnoreFirstIntervals = flagutil.NewArrayInt("mdx.remoteWrite.streamAggr.ignoreFirstIntervals", 0, "Number of aggregation intervals to skip after the start "+
+		"for the corresponding -remoteWrite.streamAggr.config at the corresponding -remoteWrite.url. Increase this value if "+
+		"you observe incorrect aggregation results after vmagent restarts. It could be caused by receiving buffered delayed data from clients pushing data into the vmagent. "+
+		"See https://docs.victoriametrics.com/victoriametrics/stream-aggregation/#ignore-aggregation-intervals-on-start")
+	mdxStreamAggrDropInputLabels = flagutil.NewArrayString("mdx.remoteWrite.streamAggr.dropInputLabels", "An optional list of labels to drop from samples "+
+		"before stream de-duplication and aggregation with -remoteWrite.streamAggr.config and -remoteWrite.streamAggr.dedupInterval at the corresponding -remoteWrite.url. "+
+		"Multiple labels per remoteWrite.url must be delimited by '^^': -mdx.remoteWrite.streamAggr.dropInputLabels='replica^^az,replica'. "+
+		"See https://docs.victoriametrics.com/victoriametrics/stream-aggregation/#dropping-unneeded-labels")
+	mdxStreamAggrEnableWindows = flagutil.NewArrayBool("mdx.remoteWrite.streamAggr.enableWindows", "Enables aggregation within fixed windows for all remote write's aggregators. "+
+		"This allows to get more precise results, but impacts resource usage as it requires twice more memory to store two states. "+
+		"See https://docs.victoriametrics.com/victoriametrics/stream-aggregation/#aggregation-windows.")
 )
 
 // CheckStreamAggrConfigs checks -remoteWrite.streamAggr.config and -streamAggr.config.
@@ -79,10 +105,20 @@ func CheckStreamAggrConfigs() error {
 	if len(*streamAggrConfig) > len(*remoteWriteURLs) {
 		return fmt.Errorf("too many -remoteWrite.streamAggr.config args: %d; it mustn't exceed the number of -remoteWrite.url args: %d", len(*streamAggrConfig), len(*remoteWriteURLs))
 	}
+	if len(*mdxStreamAggrConfig) > len(*mdxRemoteWriteURLs) {
+		return fmt.Errorf("too many -mdx.remoteWrite.streamAggr.config args: %d; it mustn't exceed the number of -mdx.remoteWrite.url args: %d", len(*streamAggrConfig), len(*remoteWriteURLs))
+	}
 
 	pushNoop := func(_ []prompb.TimeSeries) {}
 	for idx := range *streamAggrConfig {
-		sas, err := newStreamAggrConfigPerURL(idx, pushNoop)
+		sas, err := newStreamAggrConfigPerURL(idx, remoteWriteFlags, pushNoop)
+		if err != nil {
+			return err
+		}
+		sas.MustStop()
+	}
+	for idx := range *mdxStreamAggrConfig {
+		sas, err := newStreamAggrConfigPerURL(idx, mdxRemoteWriteFlags, pushNoop)
 		if err != nil {
 			return err
 		}
@@ -147,6 +183,9 @@ func initStreamAggrConfigGlobal() {
 
 func (rwctx *remoteWriteCtx) initStreamAggrConfig() {
 	idx := rwctx.idx
+	if rwctx.enableMdx {
+		idx = idx - len(*remoteWriteURLs)
+	}
 
 	sas, err := rwctx.newStreamAggrConfig()
 	if err != nil {
@@ -155,24 +194,28 @@ func (rwctx *remoteWriteCtx) initStreamAggrConfig() {
 	if sas != nil {
 		filePath := sas.FilePath()
 		rwctx.sas.Store(sas)
-		rwctx.streamAggrKeepInput = streamAggrKeepInput.GetOptionalArg(idx)
-		rwctx.streamAggrDropInput = streamAggrDropInput.GetOptionalArg(idx)
+		rwctx.streamAggrKeepInput = rwctx.flags.streamAggrKeepInput.GetOptionalArg(idx)
+		rwctx.streamAggrDropInput = rwctx.flags.streamAggrDropInput.GetOptionalArg(idx)
 		metrics.GetOrCreateCounter(fmt.Sprintf(`vmagent_streamaggr_config_reload_successful{path=%q}`, filePath)).Set(1)
 		metrics.GetOrCreateCounter(fmt.Sprintf(`vmagent_streamaggr_config_reload_success_timestamp_seconds{path=%q}`, filePath)).Set(fasttime.UnixTimestamp())
 	}
-	dedupInterval := streamAggrDedupInterval.GetOptionalArg(idx)
+	dedupInterval := rwctx.flags.streamAggrDedupInterval.GetOptionalArg(idx)
 	if dedupInterval > 0 {
 		alias := fmt.Sprintf("dedup-%d", idx+1)
 		var dropLabels []string
-		if streamAggrDropInputLabels.GetOptionalArg(idx) != "" {
-			dropLabels = strings.Split(streamAggrDropInputLabels.GetOptionalArg(idx), "^^")
+		if rwctx.flags.streamAggrDropInputLabels.GetOptionalArg(idx) != "" {
+			dropLabels = strings.Split(rwctx.flags.streamAggrDropInputLabels.GetOptionalArg(idx), "^^")
 		}
 		rwctx.deduplicator = streamaggr.NewDeduplicator(rwctx.pushInternalTrackDropped, *streamAggrGlobalEnableWindows, dedupInterval, dropLabels, alias)
 	}
 }
 
 func (rwctx *remoteWriteCtx) reloadStreamAggrConfig() {
-	path := streamAggrConfig.GetOptionalArg(rwctx.idx)
+	idx := rwctx.idx
+	if rwctx.enableMdx {
+		idx = idx - len(*remoteWriteURLs)
+	}
+	path := streamAggrConfig.GetOptionalArg(idx)
 	if path == "" {
 		return
 	}
@@ -224,30 +267,34 @@ func newStreamAggrConfigGlobal() (*streamaggr.Aggregators, error) {
 }
 
 func (rwctx *remoteWriteCtx) newStreamAggrConfig() (*streamaggr.Aggregators, error) {
-	return newStreamAggrConfigPerURL(rwctx.idx, rwctx.pushInternalTrackDropped)
+	idx := rwctx.idx
+	if rwctx.flags.enableMdx {
+		idx = idx - len(*remoteWriteURLs)
+	}
+	return newStreamAggrConfigPerURL(idx, rwctx.flags, rwctx.pushInternalTrackDropped)
 }
 
-func newStreamAggrConfigPerURL(idx int, pushFunc streamaggr.PushFunc) (*streamaggr.Aggregators, error) {
-	path := streamAggrConfig.GetOptionalArg(idx)
+func newStreamAggrConfigPerURL(idx int, flags *Flags, pushFunc streamaggr.PushFunc) (*streamaggr.Aggregators, error) {
+	path := flags.streamAggrConfig.GetOptionalArg(idx)
 	if path == "" {
 		return nil, nil
 	}
 
 	alias := fmt.Sprintf("%d:secret-url", idx+1)
 	if *showRemoteWriteURL {
-		alias = fmt.Sprintf("%d:%s", idx+1, remoteWriteURLs.GetOptionalArg(idx))
+		alias = fmt.Sprintf("%d:%s", idx+1, flags.remoteWriteURLs.GetOptionalArg(idx))
 	}
 	var dropLabels []string
-	if streamAggrDropInputLabels.GetOptionalArg(idx) != "" {
-		dropLabels = strings.Split(streamAggrDropInputLabels.GetOptionalArg(idx), "^^")
+	if flags.streamAggrDropInputLabels.GetOptionalArg(idx) != "" {
+		dropLabels = strings.Split(flags.streamAggrDropInputLabels.GetOptionalArg(idx), "^^")
 	}
 	opts := &streamaggr.Options{
-		DedupInterval:        streamAggrDedupInterval.GetOptionalArg(idx),
+		DedupInterval:        flags.streamAggrDedupInterval.GetOptionalArg(idx),
 		DropInputLabels:      dropLabels,
-		IgnoreOldSamples:     streamAggrIgnoreOldSamples.GetOptionalArg(idx),
-		IgnoreFirstIntervals: streamAggrIgnoreFirstIntervals.GetOptionalArg(idx),
-		KeepInput:            streamAggrKeepInput.GetOptionalArg(idx),
-		EnableWindows:        streamAggrEnableWindows.GetOptionalArg(idx),
+		IgnoreOldSamples:     flags.streamAggrIgnoreOldSamples.GetOptionalArg(idx),
+		IgnoreFirstIntervals: flags.streamAggrIgnoreFirstIntervals.GetOptionalArg(idx),
+		KeepInput:            flags.streamAggrKeepInput.GetOptionalArg(idx),
+		EnableWindows:        flags.streamAggrEnableWindows.GetOptionalArg(idx),
 	}
 
 	sas, err := streamaggr.LoadFromFile(path, pushFunc, opts, alias)

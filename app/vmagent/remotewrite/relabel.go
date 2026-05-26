@@ -20,12 +20,16 @@ import (
 )
 
 var (
-	unparsedLabelsGlobal    = flagutil.NewArrayString("remoteWrite.label", "Optional label in the form 'name=value' to add to all the metrics before sending them to all -remoteWrite.url.")
+	unparsedLabels          = flagutil.NewArrayString("remoteWrite.label", "Optional label in the form 'name=value' to add to all the metrics before sending them to all -remoteWrite.url.")
+	mdxUnparsedLabels       = flagutil.NewArrayString("mdx.remoteWrite.label", "Optional label in the form 'name=value' to add to all the metrics before sending them to all -remoteWrite.url.")
 	relabelConfigPathGlobal = flag.String("remoteWrite.relabelConfig", "", "Optional path to file with relabeling configs, which are applied "+
 		"to all the metrics before sending them to -remoteWrite.url. See also -remoteWrite.urlRelabelConfig. "+
 		"The path can point either to local file or to http url. "+
 		"See https://docs.victoriametrics.com/victoriametrics/relabeling/")
 	relabelConfigPaths = flagutil.NewArrayString("remoteWrite.urlRelabelConfig", "Optional path to relabel configs for the corresponding -remoteWrite.url. "+
+		"See also -remoteWrite.relabelConfig. The path can point either to local file or to http url. "+
+		"See https://docs.victoriametrics.com/victoriametrics/relabeling/")
+	mdxRelabelConfigPaths = flagutil.NewArrayString("mdx.remoteWrite.urlRelabelConfig", "Optional path to relabel configs for the corresponding -remoteWrite.url. "+
 		"See also -remoteWrite.relabelConfig. The path can point either to local file or to http url. "+
 		"See https://docs.victoriametrics.com/victoriametrics/relabeling/")
 
@@ -141,12 +145,19 @@ func loadRelabelConfigs() (*relabelConfigs, error) {
 
 	if len(*relabelConfigPaths) > len(*remoteWriteURLs) {
 		return nil, fmt.Errorf("too many -remoteWrite.urlRelabelConfig args: %d; it mustn't exceed the number of -remoteWrite.url args: %d",
-			len(*relabelConfigPaths), (len(*remoteWriteURLs)))
+			len(*relabelConfigPaths), len(*remoteWriteURLs))
+	}
+	if len(*mdxRelabelConfigPaths) > len(*mdxRemoteWriteURLs) {
+		return nil, fmt.Errorf("too many -mdx.remoteWrite.urlRelabelConfig args: %d; it mustn't exceed the number of -mdx.remoteWrite.url args: %d",
+			len(*relabelConfigPaths), len(*mdxRemoteWriteURLs))
 	}
 
 	var urlRelabelCfgs []any
-	rcs.perURL = make([]*promrelabel.ParsedConfigs, len(*remoteWriteURLs))
-	for i, path := range *relabelConfigPaths {
+	rcs.perURL = make([]*promrelabel.ParsedConfigs, len(*remoteWriteURLs)+len(*mdxRemoteWriteURLs))
+	rcp := make([]string, len(*relabelConfigPaths)+len(*mdxRelabelConfigPaths))
+	rcp = append(rcp, *relabelConfigPaths...)
+	rcp = append(rcp, *mdxRelabelConfigPaths...)
+	for i, path := range rcp {
 		if len(path) == 0 {
 			urlRelabelCfgs = append(urlRelabelCfgs, nil)
 			continue
@@ -167,6 +178,12 @@ func loadRelabelConfigs() (*relabelConfigs, error) {
 			urlRelabelCfgs = append(urlRelabelCfgs, nil)
 		}
 	}
+	if len(*mdxRemoteWriteURLs) > len(*mdxRelabelConfigPaths) {
+		// fill the urlRelabelCfgs with empty relabel configs if not set
+		for i := len(*mdxRelabelConfigPaths); i < len(*mdxRemoteWriteURLs); i++ {
+			urlRelabelCfgs = append(urlRelabelCfgs, nil)
+		}
+	}
 	remoteWriteURLRelabelConfigData.Store(&urlRelabelCfgs)
 	return &rcs, nil
 }
@@ -184,7 +201,10 @@ func (rcs *relabelConfigs) isSet() bool {
 // initLabelsGlobal must be called after parsing command-line flags.
 func initLabelsGlobal() {
 	labelsGlobal = nil
-	for _, s := range *unparsedLabelsGlobal {
+	unparsedLabelsGlobal := make([]string, len(*unparsedLabels)+len(*mdxUnparsedLabels))
+	unparsedLabelsGlobal = append(unparsedLabelsGlobal, *unparsedLabels...)
+	unparsedLabelsGlobal = append(unparsedLabelsGlobal, *mdxUnparsedLabels...)
+	for _, s := range unparsedLabelsGlobal {
 		if len(s) == 0 {
 			continue
 		}
